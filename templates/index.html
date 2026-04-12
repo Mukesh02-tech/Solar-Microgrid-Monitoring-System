@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Solar Microgrid Dashboard</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f0f2f5; margin: 0; padding: 20px; color: #333; }
+        .grid-row { display: flex; gap: 20px; margin-bottom: 20px; flex-wrap: wrap; }
+        .card { background: white; border-radius: 10px; padding: 20px; box-shadow: 0 4px 6px rgba(0,0,0,0.05); flex: 1; min-width: 200px; }
+        h2, h3 { margin-top: 0; color: #555; font-size: 1rem; text-transform: uppercase; letter-spacing: 1px; }
+        .kpi-value { font-size: 2.5rem; font-weight: bold; color: #0056b3; }
+        .alert-box { padding: 15px; margin-bottom: 10px; border-radius: 5px; font-weight: bold; display: none; }
+        .alert-warning { background: #fff3cd; color: #856404; border: 1px solid #ffeeba; display: block; }
+        .alert-critical { background: #f8d7da; color: #721c24; border: 1px solid #f5c6cb; display: block; }
+        .alert-action { background: #d1ecf1; color: #0c5460; border: 1px solid #bee5eb; display: block; border-left: 5px solid #17a2b8; }
+        .alert-good { background: #d4edda; color: #155724; border: 1px solid #c3e6cb; display: block; }
+        .chart-container { height: 300px; width: 100%; }
+        .controls { background: #e9ecef; padding: 15px; border-radius: 8px; margin-bottom: 20px; }
+        .slider-group { display: inline-block; margin-right: 15px; margin-bottom: 10px; }
+    </style>
+</head>
+<body>
+
+    <div class="controls">
+        <strong>Test Parameters:</strong>
+        <div class="slider-group"><label>Volt: <input type="range" id="s-volt" min="0" max="12" step="0.1" value="5.8" oninput="updateUI()"></label></div>
+        <div class="slider-group"><label>Curr: <input type="range" id="s-curr" min="0" max="3" step="0.1" value="1.2" oninput="updateUI()"></label></div>
+        <div class="slider-group"><label>Temp L: <input type="range" id="s-templ" min="20" max="60" value="34" oninput="updateUI()"></label></div>
+        <div class="slider-group"><label>Temp R: <input type="range" id="s-tempr" min="20" max="60" value="35" oninput="updateUI()"></label></div>
+        <div class="slider-group"><label>LDR L: <input type="range" id="s-ldrl" min="0" max="100" value="85" oninput="updateUI()"></label></div>
+        <div class="slider-group"><label>LDR R: <input type="range" id="s-ldrr" min="0" max="100" value="82" oninput="updateUI()"></label></div>
+    </div>
+
+    <div class="grid-row">
+        <div class="card"><h2>Total Voltage</h2><div class="kpi-value" id="val-volt">0.0 V</div></div>
+        <div class="card"><h2>Total Current</h2><div class="kpi-value" id="val-curr">0.0 A</div></div>
+        <div class="card"><h2>Total Power</h2><div class="kpi-value" id="val-power">0.0 W</div></div>
+        <div class="card"><h2>Efficiency</h2><div class="kpi-value" id="val-eff">0 %</div></div>
+    </div>
+
+    <div class="grid-row">
+        <div class="card" style="flex: 1;">
+            <h2>Environment Sensors</h2>
+            <p><strong>Left Temp:</strong> <span id="v-templ">0</span> °C | <strong>Right Temp:</strong> <span id="v-tempr">0</span> °C</p>
+            <p><strong>Left Light:</strong> <span id="v-ldrl">0</span> % | <strong>Right Light:</strong> <span id="v-ldrr">0</span> %</p>
+        </div>
+        <div class="card" style="flex: 2;">
+            <h2>System Status</h2>
+            <div id="alerts-container"></div>
+        </div>
+    </div>
+
+    <div class="grid-row">
+        <div class="card">
+            <h2>Degradation Tracking (Efficiency %)</h2>
+            <div class="chart-container"><canvas id="effChart"></canvas></div>
+        </div>
+        <div class="card">
+            <h2>Thermal Profile (Left vs Right °C)</h2>
+            <div class="chart-container"><canvas id="tempChart"></canvas></div>
+        </div>
+    </div>
+
+    <script>
+        // Initialize Charts
+        const ctxEff = document.getElementById('effChart').getContext('2d');
+        const effChart = new Chart(ctxEff, {
+            type: 'line',
+            data: { labels: [], datasets: [{ label: 'Efficiency %', data: [], borderColor: '#28a745', tension: 0.4 }] },
+            options: { responsive: true, maintainAspectRatio: false, scales: { y: { min: 0, max: 100 } } }
+        });
+
+        const ctxTemp = document.getElementById('tempChart').getContext('2d');
+        const tempChart = new Chart(ctxTemp, {
+            type: 'line',
+            data: { labels: [], datasets: [
+                { label: 'Left Temp', data: [], borderColor: '#dc3545', tension: 0.4 },
+                { label: 'Right Temp', data: [], borderColor: '#fd7e14', tension: 0.4 }
+            ]},
+            options: { responsive: true, maintainAspectRatio: false, scales: { y: { min: 20, max: 70 } } }
+        });
+
+        let timeStep = 0;
+
+        function updateUI() {
+            // Get values
+            const v = parseFloat(document.getElementById('s-volt').value);
+            const i = parseFloat(document.getElementById('s-curr').value);
+            const tl = parseFloat(document.getElementById('s-templ').value);
+            const tr = parseFloat(document.getElementById('s-tempr').value);
+            const ll = parseFloat(document.getElementById('s-ldrl').value);
+            const lr = parseFloat(document.getElementById('s-ldrr').value);
+
+            // Calculations
+            const power = (v * i).toFixed(2);
+            let expectedPower = (((ll + lr) / 200) * 12);
+            if (expectedPower < 0.1) expectedPower = 0.1; // prevent divide by zero
+            let eff = ((power / expectedPower) * 100).toFixed(1);
+            if (eff > 100) eff = 100.0;
+
+            // Update DOM
+            document.getElementById('val-volt').innerText = v.toFixed(1) + ' V';
+            document.getElementById('val-curr').innerText = i.toFixed(1) + ' A';
+            document.getElementById('val-power').innerText = power + ' W';
+            document.getElementById('val-eff').innerText = eff + ' %';
+            document.getElementById('v-templ').innerText = tl;
+            document.getElementById('v-tempr').innerText = tr;
+            document.getElementById('v-ldrl').innerText = ll;
+            document.getElementById('v-ldrr').innerText = lr;
+
+            // Logic & Alerts
+            const alerts = document.getElementById('alerts-container');
+            alerts.innerHTML = ''; // clear previous
+            let isNormal = true;
+
+            if (Math.abs(ll - lr) > 20) {
+                alerts.innerHTML += '<div class="alert-box alert-warning">⚠️ WARNING: Partial Shading Detected</div>';
+                isNormal = false;
+            }
+            if (Math.abs(tl - tr) > 5) {
+                alerts.innerHTML += '<div class="alert-box alert-warning">⚠️ WARNING: Thermal Imbalance (Hotspot)</div>';
+                isNormal = false;
+            }
+            if (ll > 70 && lr > 70 && power < 2) {
+                alerts.innerHTML += '<div class="alert-box alert-critical">🚨 CRITICAL: Electrical Fault in Row</div>';
+                isNormal = false;
+            }
+            if (tl > 45 || tr > 45 || (ll > 70 && lr > 70 && eff < 60)) {
+                alerts.innerHTML += '<div class="alert-box alert-action">💦 ACTION: Automated Water Spray System ACTIVATED</div>';
+                isNormal = false;
+            }
+
+            if (isNormal) {
+                alerts.innerHTML = '<div class="alert-box alert-good">✅ All Systems Nominal</div>';
+            }
+
+            // Update Charts
+            timeStep++;
+            const timeLabel = timeStep + 's';
+            
+            effChart.data.labels.push(timeLabel);
+            effChart.data.datasets[0].data.push(eff);
+            if (effChart.data.labels.length > 15) { effChart.data.labels.shift(); effChart.data.datasets[0].data.shift(); }
+            effChart.update();
+
+            tempChart.data.labels.push(timeLabel);
+            tempChart.data.datasets[0].data.push(tl);
+            tempChart.data.datasets[1].data.push(tr);
+            if (tempChart.data.labels.length > 15) { tempChart.data.labels.shift(); tempChart.data.datasets[0].data.shift(); tempChart.data.datasets[1].data.shift(); }
+            tempChart.update();
+        }
+
+        // Initial render
+        updateUI();
+    </script>
+</body>
+</html>
