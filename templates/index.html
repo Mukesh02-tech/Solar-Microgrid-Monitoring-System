@@ -14,28 +14,23 @@
         .alert-box { padding: 15px; margin-bottom: 10px; border-radius: 5px; font-weight: bold; display: none; }
         .alert-warning { background: #fff3cd; color: #856404; border: 1px solid #ffeeba; display: block; }
         .alert-critical { background: #f8d7da; color: #721c24; border: 1px solid #f5c6cb; display: block; }
-        .alert-action { background: #d1ecf1; color: #0c5460; border: 1px solid #bee5eb; display: block; border-left: 5px solid #17a2b8; }
         .alert-good { background: #d4edda; color: #155724; border: 1px solid #c3e6cb; display: block; }
+        .reason-text { font-size: 0.85rem; font-weight: normal; margin-top: 5px; display: block; opacity: 0.9; }
         .chart-container { height: 300px; width: 100%; }
-        .controls { background: #e9ecef; padding: 15px; border-radius: 8px; margin-bottom: 20px; }
-        .slider-group { display: inline-block; margin-right: 15px; margin-bottom: 10px; }
+        .status-indicator { font-size: 0.9rem; color: #666; text-align: right; margin-bottom: 10px; }
+        .live-dot { height: 10px; width: 10px; background-color: #28a745; border-radius: 50%; display: inline-block; margin-right: 5px; animation: pulse 1.5s infinite; }
+        @keyframes pulse { 0% { opacity: 1; } 50% { opacity: 0.4; } 100% { opacity: 1; } }
     </style>
 </head>
 <body>
 
-    <div class="controls">
-        <strong>Test Parameters:</strong>
-        <div class="slider-group"><label>Volt: <input type="range" id="s-volt" min="0" max="12" step="0.1" value="5.8" oninput="updateUI()"></label></div>
-        <div class="slider-group"><label>Curr: <input type="range" id="s-curr" min="0" max="3" step="0.1" value="1.2" oninput="updateUI()"></label></div>
-        <div class="slider-group"><label>Temp L: <input type="range" id="s-templ" min="20" max="60" value="34" oninput="updateUI()"></label></div>
-        <div class="slider-group"><label>Temp R: <input type="range" id="s-tempr" min="20" max="60" value="35" oninput="updateUI()"></label></div>
-        <div class="slider-group"><label>LDR L: <input type="range" id="s-ldrl" min="0" max="100" value="85" oninput="updateUI()"></label></div>
-        <div class="slider-group"><label>LDR R: <input type="range" id="s-ldrr" min="0" max="100" value="82" oninput="updateUI()"></label></div>
+    <div class="status-indicator">
+        <span class="live-dot"></span> <span id="last-update">Waiting for hardware data...</span>
     </div>
 
     <div class="grid-row">
         <div class="card"><h2>Total Voltage</h2><div class="kpi-value" id="val-volt">0.0 V</div></div>
-        <div class="card"><h2>Total Current</h2><div class="kpi-value" id="val-curr">0.0 A</div></div>
+        <div class="card"><h2>Total Current (Simulated)</h2><div class="kpi-value" id="val-curr">0.0 A</div></div>
         <div class="card"><h2>Total Power</h2><div class="kpi-value" id="val-power">0.0 W</div></div>
         <div class="card"><h2>Efficiency</h2><div class="kpi-value" id="val-eff">0 %</div></div>
     </div>
@@ -47,8 +42,10 @@
             <p><strong>Left Light:</strong> <span id="v-ldrl">0</span> % | <strong>Right Light:</strong> <span id="v-ldrr">0</span> %</p>
         </div>
         <div class="card" style="flex: 2;">
-            <h2>System Status</h2>
-            <div id="alerts-container"></div>
+            <h2>System Diagnostics</h2>
+            <div id="alerts-container">
+                <div class="alert-box alert-good" style="background: #e2e3e5; color: #383d41; border-color: #d6d8db;">⏳ Awaiting telemetry...</div>
+            </div>
         </div>
     </div>
 
@@ -58,102 +55,115 @@
             <div class="chart-container"><canvas id="effChart"></canvas></div>
         </div>
         <div class="card">
-            <h2>Thermal Profile (Left vs Right °C)</h2>
-            <div class="chart-container"><canvas id="tempChart"></canvas></div>
+            <h2>Power Performance Analysis</h2>
+            <div class="chart-container"><canvas id="powerChart"></canvas></div>
         </div>
     </div>
 
     <script>
-        // Initialize Charts
+        // --- Initialize Chart 1: Efficiency ---
         const ctxEff = document.getElementById('effChart').getContext('2d');
         const effChart = new Chart(ctxEff, {
             type: 'line',
             data: { labels: [], datasets: [{ label: 'Efficiency %', data: [], borderColor: '#28a745', tension: 0.4 }] },
-            options: { responsive: true, maintainAspectRatio: false, scales: { y: { min: 0, max: 100 } } }
+            options: { responsive: true, maintainAspectRatio: false, scales: { y: { min: 0, max: 100 } }, animation: { duration: 0 } }
         });
 
-        const ctxTemp = document.getElementById('tempChart').getContext('2d');
-        const tempChart = new Chart(ctxTemp, {
+        // --- Initialize Chart 2: Power Performance ---
+        const ctxPower = document.getElementById('powerChart').getContext('2d');
+        const powerChart = new Chart(ctxPower, {
             type: 'line',
             data: { labels: [], datasets: [
-                { label: 'Left Temp', data: [], borderColor: '#dc3545', tension: 0.4 },
-                { label: 'Right Temp', data: [], borderColor: '#fd7e14', tension: 0.4 }
+                { label: 'Actual Power (W)', data: [], borderColor: '#007bff', tension: 0.4 },
+                { label: 'Expected Power (W)', data: [], borderColor: '#6c757d', borderDash: [5, 5], tension: 0.4 }
             ]},
-            options: { responsive: true, maintainAspectRatio: false, scales: { y: { min: 20, max: 70 } } }
+            options: { responsive: true, maintainAspectRatio: false, scales: { y: { min: 0, max: 10 } }, animation: { duration: 0 } }
         });
 
-        let timeStep = 0;
+        async function fetchHardwareData() {
+            try {
+                const response = await fetch('/api/data');
+                const data = await response.json();
 
-        function updateUI() {
-            // Get values
-            const v = parseFloat(document.getElementById('s-volt').value);
-            const i = parseFloat(document.getElementById('s-curr').value);
-            const tl = parseFloat(document.getElementById('s-templ').value);
-            const tr = parseFloat(document.getElementById('s-tempr').value);
-            const ll = parseFloat(document.getElementById('s-ldrl').value);
-            const lr = parseFloat(document.getElementById('s-ldrr').value);
+                const v = parseFloat(data.voltage) || 0;
+                const tl = parseFloat(data.tempLeft) || 0;
+                const tr = parseFloat(data.tempRight) || 0;
+                const ll = parseFloat(data.ldrLeft) || 0;
+                const lr = parseFloat(data.ldrRight) || 0;
 
-            // Calculations
-            const power = (v * i).toFixed(2);
-            let expectedPower = (((ll + lr) / 200) * 12);
-            if (expectedPower < 0.1) expectedPower = 0.1; // prevent divide by zero
-            let eff = ((power / expectedPower) * 100).toFixed(1);
-            if (eff > 100) eff = 100.0;
+                // --- Simulate Current based on 6V Panel ---
+                let simulatedCurrent = 0;
+                if (v > 0.5) {
+                    let noise = (Math.random() * 0.04) - 0.02;
+                    simulatedCurrent = ((v / 6.0) * 1.2) + noise;
+                    if (simulatedCurrent < 0) simulatedCurrent = 0;
+                }
 
-            // Update DOM
-            document.getElementById('val-volt').innerText = v.toFixed(1) + ' V';
-            document.getElementById('val-curr').innerText = i.toFixed(1) + ' A';
-            document.getElementById('val-power').innerText = power + ' W';
-            document.getElementById('val-eff').innerText = eff + ' %';
-            document.getElementById('v-templ').innerText = tl;
-            document.getElementById('v-tempr').innerText = tr;
-            document.getElementById('v-ldrl').innerText = ll;
-            document.getElementById('v-ldrr').innerText = lr;
+                // --- Calculations ---
+                const power = (v * simulatedCurrent).toFixed(2);
+                let expectedPower = (((ll + lr) / 200) * 7.2);
+                if (expectedPower < 0.1) expectedPower = 0.1; 
+                
+                let eff = ((power / expectedPower) * 100).toFixed(1);
+                if (eff > 100) eff = 100.0;
 
-            // Logic & Alerts
-            const alerts = document.getElementById('alerts-container');
-            alerts.innerHTML = ''; // clear previous
-            let isNormal = true;
+                // --- Update DOM Text ---
+                document.getElementById('val-volt').innerText = v.toFixed(2) + ' V';
+                document.getElementById('val-curr').innerText = simulatedCurrent.toFixed(2) + ' A';
+                document.getElementById('val-power').innerText = power + ' W';
+                document.getElementById('val-eff').innerText = eff + ' %';
+                document.getElementById('v-templ').innerText = tl;
+                document.getElementById('v-tempr').innerText = tr;
+                document.getElementById('v-ldrl').innerText = ll;
+                document.getElementById('v-ldrr').innerText = lr;
 
-            if (Math.abs(ll - lr) > 20) {
-                alerts.innerHTML += '<div class="alert-box alert-warning">⚠️ WARNING: Partial Shading Detected</div>';
-                isNormal = false;
+                const now = new Date();
+                document.getElementById('last-update').innerText = "Last Update: " + now.toLocaleTimeString();
+
+                // --- UPDATED Diagnostic Logic ---
+                const alerts = document.getElementById('alerts-container');
+                alerts.innerHTML = ''; 
+                
+                const avgLdr = (ll + lr) / 2;
+
+                if (avgLdr < 50 && power < 2.0) { 
+                    // LOGIC: LDR Low + Solar Low = Shading
+                    alerts.innerHTML = '<div class="alert-box alert-warning">☁️ NOTICE: Shading / Cloud Cover<span class="reason-text">Reason: LDR output is LOW and Solar output is LOW.</span></div>';
+                } else if (avgLdr >= 50 && power < 2.0) {
+                    // LOGIC: LDR High + Solar Low = Dust/Fault
+                    alerts.innerHTML = '<div class="alert-box alert-critical">🧹 WARNING: Dust Accumulation / Panel Fault<span class="reason-text">Reason: LDR output is HIGH but Solar output is abnormally LOW.</span></div>';
+                } else {
+                    // LOGIC: Everything is matching expected parameters
+                    alerts.innerHTML = '<div class="alert-box alert-good">✅ All Systems Nominal</div>';
+                }
+
+                // --- Update Charts ---
+                const timeLabel = now.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit', second:'2-digit'});
+                
+                effChart.data.labels.push(timeLabel);
+                effChart.data.datasets[0].data.push(eff);
+                if (effChart.data.labels.length > 20) { effChart.data.labels.shift(); effChart.data.datasets[0].data.shift(); }
+                effChart.update();
+
+                powerChart.data.labels.push(timeLabel);
+                powerChart.data.datasets[0].data.push(power);
+                powerChart.data.datasets[1].data.push(expectedPower.toFixed(2));
+                if (powerChart.data.labels.length > 20) { 
+                    powerChart.data.labels.shift(); 
+                    powerChart.data.datasets[0].data.shift(); 
+                    powerChart.data.datasets[1].data.shift(); 
+                }
+                powerChart.update();
+
+            } catch (error) {
+                console.error("Error fetching data:", error);
+                document.getElementById('last-update').innerText = "Connection lost. Retrying...";
             }
-            if (Math.abs(tl - tr) > 5) {
-                alerts.innerHTML += '<div class="alert-box alert-warning">⚠️ WARNING: Thermal Imbalance (Hotspot)</div>';
-                isNormal = false;
-            }
-            if (ll > 70 && lr > 70 && power < 2) {
-                alerts.innerHTML += '<div class="alert-box alert-critical">🚨 CRITICAL: Electrical Fault in Row</div>';
-                isNormal = false;
-            }
-            if (tl > 45 || tr > 45 || (ll > 70 && lr > 70 && eff < 60)) {
-                alerts.innerHTML += '<div class="alert-box alert-action">💦 ACTION: Automated Water Spray System ACTIVATED</div>';
-                isNormal = false;
-            }
-
-            if (isNormal) {
-                alerts.innerHTML = '<div class="alert-box alert-good">✅ All Systems Nominal</div>';
-            }
-
-            // Update Charts
-            timeStep++;
-            const timeLabel = timeStep + 's';
-            
-            effChart.data.labels.push(timeLabel);
-            effChart.data.datasets[0].data.push(eff);
-            if (effChart.data.labels.length > 15) { effChart.data.labels.shift(); effChart.data.datasets[0].data.shift(); }
-            effChart.update();
-
-            tempChart.data.labels.push(timeLabel);
-            tempChart.data.datasets[0].data.push(tl);
-            tempChart.data.datasets[1].data.push(tr);
-            if (tempChart.data.labels.length > 15) { tempChart.data.labels.shift(); tempChart.data.datasets[0].data.shift(); tempChart.data.datasets[1].data.shift(); }
-            tempChart.update();
         }
 
-        // Initial render
-        updateUI();
+        // Fetch data every 2 seconds
+        setInterval(fetchHardwareData, 2000);
+        fetchHardwareData();
     </script>
 </body>
 </html>
